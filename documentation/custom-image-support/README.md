@@ -1,78 +1,223 @@
-# ADE Custom Image Support
-This page is designed to help customers understand how to build and utilize custom images within their environment definitions for deployments in Azure Deployment Environments. 
+# Azure Deployment Environments Custom Image Support
+This page is designed to help customers understand how to extend Azure Deployment Environments using custom runners. 
 
-To see how the ADE-authored Core and ARM/Bicep images are structured, check out the Runner-Images folder [here](../../Runner-Images/README.md).
+> You can find a quickstart guide for creating and building a custom image, as well as information on pushing the image to a registry, [here](quickstart.md).
 
-In order to use the ADE CLI, you will need to use an ADE-authored image as a base image. More information about the ADE CLI can be found [here](./ade-cli-docs/README.md).
+Azure Deployment Environments provides a powerful gateway between developers and Azure resources. The service allows developers to deploy and manage Azure resources without needing to have the necessary permissions themselves. This is achieved by using runners that are executed by the Dev Center and have the necessary permissions to interact with Azure resources.
 
-## Creating and Building the Docker Image
+The runners are Docker images that contain the necessary tools and scripts to execute the operation. A set of predefined runners that can handle common scenarios (e.g., ARM, Bicep, Terraform) are managed by the Azure Deployment Environments team and can be pulled by the service when an operation is initiated. Custom runners are created by users and are pulled by the service when an operation is initiated for Environment Definitions that specify a custom runner.
 
-### FROM Statement
+This document provides an overview of the extensibility concepts of Azure Deployment Environments and the process for a runner operation to help you get started.
 
-If you are wanting to build a Docker image to utilize ADE deployments and access the ADE CLI, you will want to base your image off of one of the ADE-authored images. This can be done by including a FROM statement within a created DockerFile for your new image pointing to an ADE-authored image hosted on Microsoft Artifact Registry.
+## Extensibility Concepts
 
-Here's an example of that FROM statement, pointing to the ADE-authored core image:
-```docker
-FROM mcr.microsoft.com/deployment-environments/runners/core:latest
-```
+### Developer
 
-This statement pulls the most recently-published core image, and makes it a basis for your custom image.
+The end user who initiates operations on Azure Deployment Environments. The developer may not have the necessary permissions to execute the operation themselves, so the operation is executed by a runner.
 
-### RUN Statement
+### Operation
 
-Next, you can use the RUN statement to install any additional packages you would need to use within your image. ADE-authored images are based off of the Azure CLI image, and have the ADE CLI and JQ packages pre-installed. You can learn more about the Azure CLI [here](https://learn.microsoft.com/en-us/cli/azure/), and the JQ package [here](https://devdocs.io/jq/).
+When an action is initiated by a developer on a Project Environment Type, an operation is created. There are currently two supported operation names: `deploy` and `delete`.
 
-Here's an example used in our Bicep image, installing the Bicep package within our Dockerfile.
-```docker
-RUN az bicep install
-```
+The extensibility of Azure Deployment Environments runs within operations.
 
-### Executing Operation Shell Scripts
+#### Operation Instantiation
 
-Within the ADE-authored images, operations are determined and executed based off of the operation name. Currently, the two operation names supported are 'deploy' and 'delete', with plans to expand this moving forward.
+When a developer initiates an operation, the operation is assigned an `operationId` and creates an Azure Container Instance containing the runner. When the container is launched, the operation passes the `operationId` and Dev Center ID (target resource) to the runner which it then uses to interact with the Dev Center and execute the requested operation.
 
-To set up your custom image to utilize this structure, specify a folder at the level of your Dockerfile named 'scripts', and specify two files, 'deploy.sh', and 'delete.sh'. The 'deploy' shell script will run when your environment is created or redeployed, and the 'delete' shell script will run when your environment is deleted. You can see examples of this within this repository under the Runner-Images folder for the ARM-Bicep image.
+There are 3 primary ways for a Developer to initiate an operation:
+- [Azure Developer CLI (azd)](https://learn.microsoft.com/en-us/azure/deployment-environments/how-to-create-environment-with-azure-developer)
+- [Microsoft Developer Portal](https://devportal.microsoft.com)
+- [API Call](https://learn.microsoft.com/en-us/rest/api/devcenter/developer/environments)
 
-To ensure these shell scripts are executable, add the following lines to your Dockerfile:
-```docker
-COPY scripts/* /scripts/
-RUN find /scripts/ -type f -iname "*.sh" -exec dos2unix '{}' '+'
-RUN find /scripts/ -type f -iname "*.sh" -exec chmod +x {} \;
-```
-### Building the Image
+Each of these methods makes a [PUT request](https://learn.microsoft.com/en-us/rest/api/devcenter/developer/environments/create-or-replace-environment) to the Azure Dev Center API that contains information including:
+- Environment Definition ID
+- Parameters
+- Project Environment Type
 
-To build the image to be pushed to your registry, please ensure the Docker Engine is installed on your computer, navigate to the directory of your Dockerfile, and run the following command:
-```
-docker build . -t {YOUR_REGISTRY}.azurecr.io/{YOUR_IMAGE_LOCATION}:{YOUR_TAG}
-```
+### Runner
 
-For example, if you wanted to save your image under a repository within your repo named 'customImage', and you wanted to upload with the tag version of '1.0.0', you would run:
+The most basic functionality of Azure Deployment Environments is to safely escalate permissions for the management of Azure resources as initated by an end user developer that may not have the rights to make those operations themselves.
 
-```
-docker build . -t {YOUR_REGISTRY}.azurecr.io/customImage:1.0.0
-```
-## Pushing the Docker Image to a Registry
-In order to use custom images, you will need to set up a publicly-accessible image registry with anonymous image pull enabled. This way, Azure Deployment Environments can access your custom image to execute in our container.
+After the operation is initiated by the end user developer, the actual entity that takes on the elevated permissions is the runner. The runner is a container that is spun up by the Azure Deployment Environments service to execute the operation.
 
-Azure Container Registry is an offering by Azure that provides storing of container images and similar artifacts.
+#### Predefined Runner
 
-To create a registry, which can be done through the Azure CLI, the Azure Portal, Powershell commands, and more, please follow one of the quickstarts [here](https://learn.microsoft.com/en-us/azure/container-registry/container-registry-get-started-azure-cli).
+A predefined runner is a Docker image that is created by the Azure Deployment Environments team that contains the necessary tools and scripts to execute the operation. The predefined runner is pulled by the Azure Deployment Environments service and used to execute the operation.
 
-To set up your registry to have anonymous image pull enabled, please run the following command in the Azure CLI:
-```
-az login
-az acr login -n {YOUR_REGISTRY}
-az acr update -n {YOUR_REGISTRY} --public-network-enabled true
-az acr update -n {YOUR_REGISTRY} --anonymous-pull-enabled true
-```
-When you are ready to push your image to your registry, run the following command:
-```
-docker push {YOUR_REGISTRY}.azurecr.io/{YOUR_IMAGE_LOCATION}:{YOUR_TAG}
-```
-
-## Connecting the Image to your Environment Definition
-
-When authoring environment definitions to use your custom image in their deployment, simply edit the 'runner' property on the manifest file (environment.yaml or manifest.yaml).
+These runners can be specified within an Environment Definition. For example, the basic ARM runner can be specified as follows:
 ```yaml
-runner: "{YOUR_REGISTRY}.azurecr.io/{YOUR_IMAGE_LOCATION}:{YOUR_TAG}"
+runner: ARM
 ```
+
+Within this repo, you can find the source code for 3 predefined runners:
+- ARM-Bicep
+- Core
+- Terraform
+
+#### Custom Runner
+
+A custom runner is a Docker image that is created by a user that contains the necessary tools and scripts to execute the operation. The custom runner is pulled by the Azure Deployment Environments service and used to execute the operation.
+
+#### Runner Roles
+
+During the operation, the runner is assigned a role that allows it to interact with Azure resources. The role is assigned to the managed identity that is used for the custom runner, and it is removed at the end of the operation. See Project Environment Type Role for more information on the source of these rights.
+
+### Dev Center
+
+The Azure Dev Center provides the overall framework for extensibility in Azure Deployment Environments. All of the operations are scoped to a Dev Center.
+
+#### Dev Center Storage
+
+A storage account is hosted on behalf of the Dev Center that contains the files used for and generated by operations. Within the scope of the extensibility model, the `ade` CLI is used to interact with the Dev Center Storage.
+
+### Dev Center Managed Identity
+
+Azure Deployment Environments uses a managed identity to interact with Azure resources. This managed identity is scoped to the Dev Center and has User Access Administrator permissions which allows it to grant permissions to the custom runner for the duration of the operation.
+
+### Environment Type
+
+A classification for the categories of environments that can be deployed within Projects under the Dev Center. At the Dev Center level, the Environment Type does not have any configuration of its own.
+
+### Project
+
+The project serves as a container around the Project Environment Types that will be used for operations.
+
+### Project Environment Type
+
+The Project Environment Type is a configured version of an Environment Type that contains a reference to the deployment subscription, a reference to the runner image, and a managed identity that is managed by the Project or the Dev Center managed identity.
+
+#### Project Environment Type Role
+
+While a deployment is underway, the operation is assigned a role using the User Access Administrator role of the managed identity from the Project or from the Dev Center. The role is assigned to the managed identity that is used for the custom runner, and it is removed at the end of the operation.
+
+### Catalog
+
+As part of an Azure Deployment Environment operation, a developer is able to take actions within Azure that they do not have permissions to take themselves. The operation they initiate acts on an infrastructure-as-code Environment Definition that is stored in the Catalog.
+
+The Catalog exists in two places:
+
+- Source Code: A git repository managed by the user
+- Catalog Cache: An archive of the Catalog source code that is stored in the Dev Center Storage
+
+#### Catalog Sync
+
+When an admin initiates a Catalog sync, the Catalog Cache is updated with the latest version of the Catalog source code.
+
+#### Environment Definition
+
+The primary infrastructure-as-code file and its dependencies (which may be configurations, parameters, scripts, additional infrastructure-as-code files, or other resources) are bundled for each predefined infrastructure environment that can be deployed by end user developers.
+
+#### Environment Definition Manifest
+
+The Environment Definition Manifest is a YAML file that contains the metadata for the Environment Definition. The manifest contains the following properties:
+- Parameters that need to be completed by the end user developer
+- The path to the main infrastructure-as-code template file
+- Runner selection
+
+[Learn More](https://learn.microsoft.com/en-us/azure/deployment-environments/concept-environment-yaml)
+
+### Environment Definition Cache
+
+When the runner uses the `ade` CLI to interact with the Dev Center Storage, it downloads the most recent version of the Catalog Cache to the container for use in subsequent steps within the operation.
+
+### Resource Group
+
+The resource group is the container for the resources that are deployed during the operation. The resource group is created by the managed identity that is scoped to the Dev Center.
+
+#### Resource Group Role
+
+Once the Resource Group has been created, Azure Deployment Environments uses the managed identity for the Project or Dev Center (as configured within the Project Environment Type) with User Access Administrator rights to grant permissions on the Resource Group to the user who initiated the action and other users who were assigned within the configuration of the Project Environment Type.
+
+### `ade` CLI
+
+The `ade` CLI is a command-line interface that is used by the runner to interact with the Dev Center Storage. Currently, `ade` only works within the Core runner that is being executed by the Azure Deployment Environments service. Additional documentation can be found here [here](/documentation/custom-image-support/ade-cli-docs/README.md).
+
+#### `ade` CLI Log Pump
+
+The `ade` CLI log pump is a feature of the `ade` CLI that allows the runner to log information to the Dev Center Storage. The log pump is used to record details regarding the execution of the operation on the environment while within the container. In order to manage storage account I/O, logs are sent in batches.
+
+The log pump runs within `ade` execution and pipes stdout/stderr to the Dev Center Storage.
+
+## Process for a Runner Operation
+
+### Operation Initialization
+
+The end user developer makes a request for an operation to be executed.
+
+Most commonly, this request will occur through the Azure Developer CLI (azd), the Microsoft Developer Portal (devportal.microsoft.com), or an API call.
+
+The request is made to the [Azure Dev Center API and contains the metadata necessary to complete the operation](https://learn.microsoft.com/en-us/rest/api/devcenter/developer/environments/create-or-replace-environment).
+
+### Initialization of Permissions
+
+The Dev Center uses the managed identity configured for the Project Environment Type (which has User Access Administrator rights) to grant permissions to the Project Environment Type managed identity.
+
+### Manage Resource Group
+
+Using the managed identity, the Dev Center makes the necessary changes to an Azure Resource Group for the operation. For example, a `deploy` operation will create a new Resource Group, while a `delete` operation will remove the Resource Group.
+
+Using the configuration of the Project Environment Type, the Dev Center grants permissions to the Resource Group to the user who initiated the action and other users who were assigned within the configuration of the Project Environment Type. The level of permissions granted is determined by the Project Environment Type configuration. For example, users may be granted `Owner` permissions on a `Dev` environment and `Read Only` permissions on a `Prod` environment.
+
+### Fetch Runner
+
+Based on the Environment Definition Manifest, the runner image is fetched from the container registry. For predefined runners, the image is pulled from the Azure Container Registry by alias. For custom runners, the image is pulled from the user's container registry.
+
+### Execute Runner
+
+The runner is executed within an Azure Container Instance with two parameters:
+- The operation ID, `operationId`
+- The Dev Center ID, `properties.targetResource.id`
+
+The operation ID represents the Dev Center operation data object that contains the metadata that the runner needs to execute the operation.
+
+### entrypoint.sh
+
+> **Note:** Your custom image may modify the behavior of `entrypoint.sh` to suit your needs. This documentation refers to the implementation contained in the Core runner.
+
+### Overview of `entrypoint.sh` Script Actions
+
+The `entrypoint.sh` script serves as the main entry point for custom runners and for Azure Deployment Environment extensibility. It performs various actions, such as initializing the environment, executing deployment scripts, handling errors, and managing files in the Drv Center Storage.
+
+#### Actions Taken by the Script
+
+1. **Initialize ADE Runner**: Calls the `ade init` command, executing initialization steps for the ADE environment, and captures its output for use in the script.
+
+2. **Download Environment State**: Attempts to download a file named `storage.zip` from Dev Center Storage to the local environment, unzipping it if present.
+
+3. **Determine the Script to Execute**: Checks for a custom deployment script matching the operation name in the current directory or in the `/scripts` directory. The script to be executed is determined by the presence of `[ADE_OPERATION_NAME].sh`.
+
+4. **Execute the Determined Script**: If a valid script is found, it's executed with error outputs captured and logged. The script must be both present and executable, or the process exits with an error.
+
+5. **Handle Script Execution Results**: Through the `catch` function, the script manages the outcomes of operations, including successful completion and various error conditions, updating the ADE environment and logging as necessary.
+
+### Action Script
+
+A script is chosen based on the operation name passed to the runner. For example, if the operation name is `deploy`, the runner will look for a script named `deploy.sh` in the root directory of the runner image.
+
+In the Core runner, the script is an empty placeholder. In the predefined runners, the script contains the necessary steps to execute the operation. You may further customize the script to suit your needs in your custom runners.
+
+#### Example `deploy.sh` as Implemented in the ARM-Bicep Predefined Runner
+
+The `deploy.sh` script (as implemented in the predefined ARM-Bicep runner) orchestrates the deployment of resources using Azure Resource Manager (ARM) or Bicep templates. The script ensures robust error handling and state management during the deployment process.
+
+Here's a high-level overview of the actions taken by the script:
+
+1. **Generate a unique deployment name**: Creates a timestamp-based name for the deployment to ensure uniqueness.
+2. **Prepare deployment parameters**: Transforms environment variables into a JSON object formatted for ARM deployment parameters.
+3. **Sign into Azure using Managed Identity (MSI)**: Attempts to authenticate to Azure using a managed identity, with retries on failure.
+4. **Initiate the ARM/Bicep template deployment**: Starts the deployment process with the specified subscription, resource group, template file, and parameters.
+5. **Check the deployment status**: Periodically queries Azure to retrieve the current state of the deployment and displays the progress.
+6. **Handle deployment completion**: Upon completion, checks if the deployment succeeded, was canceled, or failed, and processes the result accordingly.
+7. **Extract and save deployment outputs**: Retrieves the output of the deployment and saves it to a specified location, completing the deployment process.
+
+### Handle Script Failure
+
+If there is a non-zero exit code from the script, the runner will use the `ade` CLI tooling to:
+- Upload environment state
+- Get error details and upload to environment object (ade operation result)
+- Upload any remaining logs (ade log)
+
+### Removal of Permissions
+
+Once the operation has completed, the permissions that were granted to the managed identity for the custom runner are removed.
